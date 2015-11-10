@@ -28,6 +28,25 @@ namespace MuMech
             limitToTerminalVelocity = GUILayout.Toggle(limitToTerminalVelocity, "Limit to terminal velocity", s);
         }
 
+
+        [Persistent(pass = (int)Pass.Global)]
+        public bool limitDynamicPressure = false;
+
+        [Persistent(pass = (int)Pass.Global)]
+        public EditableDouble maxDynamicPressure = 20000;
+
+        [GeneralInfoItem("Limit to Max Q", InfoItem.Category.Thrust)]
+        public void LimitToMaxDynamicPressureInfoItem()
+        {
+            GUILayout.BeginHorizontal();
+            GUIStyle s = new GUIStyle(GUI.skin.toggle);
+            if (limiter == LimitMode.DynamicPressure) s.onHover.textColor = s.onNormal.textColor = Color.green;
+            limitDynamicPressure = GUILayout.Toggle(limitDynamicPressure, "Limit Q to", s, GUILayout.Width(140));
+            maxDynamicPressure.text = GUILayout.TextField(maxDynamicPressure.text, GUILayout.Width(80));
+            GUILayout.Label("pa", GUILayout.ExpandWidth(false));
+            GUILayout.EndHorizontal();
+        }
+
         [Persistent(pass = (int)Pass.Global)]
         public bool limitToPreventOverheats = false;
 
@@ -102,6 +121,24 @@ namespace MuMech
             GUILayout.EndHorizontal();
         }
 
+        [Persistent(pass = (int)Pass.Local)]
+        public bool limiterMinThrottle = false;
+
+        [Persistent(pass = (int)Pass.Local)]
+        public EditableDoubleMult minThrottle = new EditableDoubleMult(0.05, 0.01);
+
+        [GeneralInfoItem("Lower throttle limit", InfoItem.Category.Thrust)]
+        public void LimiterMinThrottleInfoItem()
+        {
+            GUILayout.BeginHorizontal();
+            GUIStyle s = new GUIStyle(GUI.skin.toggle);
+            if (limiter == LimitMode.MinThrottle) s.onHover.textColor = s.onNormal.textColor = Color.green;
+            limiterMinThrottle = GUILayout.Toggle(limiterMinThrottle, "Keep limited throttle over", s, GUILayout.Width(160));
+            minThrottle.text = GUILayout.TextField(minThrottle.text, GUILayout.Width(30));
+            GUILayout.Label("%", GUILayout.ExpandWidth(false));
+            GUILayout.EndHorizontal();
+        }
+
         [Persistent(pass = (int)Pass.Type)]
         public bool differentialThrottle = false;
 
@@ -124,13 +161,43 @@ namespace MuMech
         // true if differential throttle is active and a solution has been found i.e. at least 3 engines are on and they are not aligned
         public bool differentialThrottleSuccess = false;
 
-        public enum LimitMode { None, TerminalVelocity, Temperature, Flameout, Acceleration, Throttle }
+        [Persistent(pass = (int)Pass.Local)]
+        public bool electricThrottle = false;
+
+        [Persistent(pass = (int)Pass.Local)]
+        public EditableDoubleMult electricThrottleLo = new EditableDoubleMult(0.05, 0.01);
+        [Persistent(pass = (int)Pass.Local)]
+        public EditableDoubleMult electricThrottleHi = new EditableDoubleMult(0.15, 0.01);
+
+        [GeneralInfoItem("Electric limit", InfoItem.Category.Thrust)]
+        public void LimitElectricInfoItem()
+        {
+            GUILayout.BeginHorizontal();
+            GUIStyle s = new GUIStyle(GUI.skin.toggle);
+            if (limiter == LimitMode.Electric)
+            {
+                if (vesselState.throttleLimit <0.001)
+                    s.onHover.textColor = s.onNormal.textColor = Color.red;
+                else
+                    s.onHover.textColor = s.onNormal.textColor = Color.yellow;
+            }
+            else if (ElectricEngineRunning()) s.onHover.textColor = s.onNormal.textColor = Color.green;
+
+            electricThrottle = GUILayout.Toggle(electricThrottle, "Electric limit Lo", s, GUILayout.Width(110));
+            electricThrottleLo.text = GUILayout.TextField(electricThrottleLo.text, GUILayout.Width(30));
+            GUILayout.Label("% Hi", GUILayout.ExpandWidth(false));
+            electricThrottleHi.text = GUILayout.TextField(electricThrottleHi.text, GUILayout.Width(30));
+            GUILayout.Label("%", GUILayout.ExpandWidth(false));
+            GUILayout.EndHorizontal();
+        }
+
+        public enum LimitMode { None, TerminalVelocity, Temperature, Flameout, Acceleration, Throttle, DynamicPressure, MinThrottle, Electric }
         public LimitMode limiter = LimitMode.None;
 
         public float targetThrottle = 0;
 
         protected bool tmode_changed = false;
-        
+
 
         public PIDController pid;
 
@@ -280,8 +347,8 @@ namespace MuMech
                 }
                 else
                 {
-                    bool useGimbal = (vesselState.torqueFromEngine.x > vesselState.torqueAvailable.x * 10) ||
-                                     (vesselState.torqueFromEngine.z > vesselState.torqueAvailable.z * 10);
+                    bool useGimbal = (vesselState.torqueFromEngine.x / vessel.ctrlState.mainThrottle > vesselState.torqueAvailable.x * 10) ||
+                                     (vesselState.torqueFromEngine.z / vessel.ctrlState.mainThrottle > vesselState.torqueAvailable.z * 10);
 
                     bool useDiffThrottle = (vesselState.torqueFromDiffThrottle.x > vesselState.torqueAvailable.x * 10) ||
                                            (vesselState.torqueFromDiffThrottle.z > vesselState.torqueAvailable.z * 10);
@@ -319,6 +386,13 @@ namespace MuMech
                 throttleLimit = Mathf.Min(throttleLimit, limit);
             }
 
+            if (limitDynamicPressure)
+            {
+                float limit = MaximumDynamicPressureThrottle();
+                if (limit < throttleLimit) limiter = LimitMode.DynamicPressure;
+                throttleLimit = Mathf.Min(throttleLimit, limit);
+            }
+
             if (limitToPreventOverheats)
             {
                 float limit = (float)TemperatureSafetyThrottle();
@@ -333,6 +407,13 @@ namespace MuMech
                 throttleLimit = Mathf.Min(throttleLimit, limit);
             }
 
+            if (electricThrottle && ElectricEngineRunning())
+            {
+                float limit = ElectricThrottle();
+                if (limit < throttleLimit) limiter = LimitMode.Electric;
+                throttleLimit = Mathf.Min(throttleLimit, limit);
+            }
+
             if (limitToPreventFlameout)
             {
                 // This clause benefits being last: if we don't need much air
@@ -340,6 +421,12 @@ namespace MuMech
                 float limit = FlameoutSafetyThrottle();
                 if (limit < throttleLimit) limiter = LimitMode.Flameout;
                 throttleLimit = Mathf.Min(throttleLimit, limit);
+            }
+
+            if (limiterMinThrottle  && limiter != LimitMode.None && throttleLimit < minThrottle)
+            {
+                limiter = LimitMode.MinThrottle;
+                throttleLimit = (float) minThrottle;
             }
 
             if (double.IsNaN(throttleLimit)) throttleLimit = 0;
@@ -394,6 +481,20 @@ namespace MuMech
             //throttle down quickly as we exceed terminal velocity:
             const double falloff = 15.0;
             return Mathf.Clamp((float)(1.0 - falloff * (velocityRatio - 1.0)), 0.0F, 1.0F);
+        }
+
+        //A throttle setting that throttles down when the dynamic pressure exceed a set value
+        float MaximumDynamicPressureThrottle()
+        {
+            if (maxDynamicPressure <= 0) return 1.0F;
+
+            double pressureRatio = vesselState.dynamicPressure / maxDynamicPressure;
+
+            if (pressureRatio < 1.0) return 1.0F; //full throttle if under maximum dynamic pressure
+
+            //throttle down quickly as we exceed maximum dynamic pressure:
+            const double falloff = 15.0;
+            return Mathf.Clamp((float)(1.0 - falloff * (pressureRatio - 1.0)), 0.0F, 1.0F);
         }
 
         //a throttle setting that throttles down if something is close to overheating
@@ -558,6 +659,30 @@ namespace MuMech
                     }
                 }
             }
+        }
+
+        bool ElectricEngineRunning() {
+            var activeEngines = vessel.parts.Where(p => p.inverseStage >= Staging.CurrentStage && p.IsEngine() && !p.IsSepratron());
+            var engineModules = activeEngines.Select(p => p.Modules.OfType<ModuleEngines>().First(e => e.isEnabled));
+
+            return engineModules.SelectMany(eng => eng.propellants).Any(p => p.name == "ElectricCharge");
+        }
+
+        float ElectricThrottle()
+        {
+            double totalElectric = vessel.MaxResourceAmount("ElectricCharge");
+            double lowJuice = totalElectric * electricThrottleLo;
+            double highJuice = totalElectric * electricThrottleHi;
+            double curElectric = vessel.TotalResourceAmount("ElectricCharge");
+
+            if (curElectric <= lowJuice)
+                return 0;
+            if (curElectric >= highJuice)
+                return 1;
+            // Avoid divide by zero
+            if (Math.Abs(highJuice - lowJuice) < 0.01)
+                return 1;
+            return Mathf.Clamp((float) ((curElectric - lowJuice) / (highJuice - lowJuice)), 0, 1);
         }
 
         //The throttle setting that will give an acceleration of maxAcceleration

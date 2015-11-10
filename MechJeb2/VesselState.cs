@@ -407,23 +407,6 @@ namespace MuMech
 
             surfaceVelocity = orbitalVelocity - vessel.mainBody.getRFrmVel(CoM);
 
-            // Angle of attack, angle between surface velocity and the vessel's "up" vector
-            // Originally from ferram4's FAR
-            Vector3 tmpVec = vessel.ReferenceTransform.up * Vector3.Dot(vessel.ReferenceTransform.up, surfaceVelocity.normalized)
-                           + vessel.ReferenceTransform.forward * Vector3.Dot(vessel.ReferenceTransform.forward, surfaceVelocity.normalized);   //velocity vector projected onto a plane that divides the airplane into left and right halves
-            double tmpAoA = 180.0 / Math.PI * Math.Asin(Vector3.Dot(tmpVec.normalized, vessel.ReferenceTransform.forward));
-            AoA.value = double.IsNaN(tmpAoA) ? 0 : tmpAoA;
-
-            // Angle of Sideslip, angle between surface velocity and the vessel's "right" vector
-            // Originally from ferram4's FAR
-            tmpVec = vessel.ReferenceTransform.up * Vector3.Dot(vessel.ReferenceTransform.up, surfaceVelocity.normalized)
-                   + vessel.ReferenceTransform.right * Vector3.Dot(vessel.ReferenceTransform.right, surfaceVelocity.normalized);     //velocity vector projected onto the vehicle-horizontal plane
-            double tempAoS = 180.0 / Math.PI * Math.Asin(Vector3.Dot(tmpVec.normalized, vessel.ReferenceTransform.right));
-            if (double.IsNaN(tempAoS))
-                AoS.value = 0;
-            else
-                AoS.value = tempAoS;
-
             velocityMainBodySurface = rotationSurface * surfaceVelocity;
 
             horizontalOrbit = Vector3d.Exclude(up, orbitalVelocity).normalized;
@@ -446,6 +429,20 @@ namespace MuMech
             speedVertical.value = Vector3d.Dot(surfaceVelocity, up);
             speedSurfaceHorizontal.value = Vector3d.Exclude(up, surfaceVelocity).magnitude; //(velocityVesselSurface - (speedVertical * up)).magnitude;
             speedOrbitHorizontal = (orbitalVelocity - (speedVertical * up)).magnitude;
+
+            // Angle of attack, angle between surface velocity and the vessel's "up" vector
+            // Originally from ferram4's FAR
+            Vector3 tmpVec = vessel.ReferenceTransform.up * Vector3.Dot(vessel.ReferenceTransform.up, surfaceVelocity.normalized)
+                           + vessel.ReferenceTransform.forward * Vector3.Dot(vessel.ReferenceTransform.forward, surfaceVelocity.normalized);   //velocity vector projected onto a plane that divides the airplane into left and right halves
+            double tmpAoA = 180.0 / Math.PI * Math.Asin(Vector3.Dot(tmpVec.normalized, vessel.ReferenceTransform.forward));
+            AoA.value = double.IsNaN(tmpAoA) || speedSurface.value < 0.01 ? 0 : tmpAoA;
+
+            // Angle of Sideslip, angle between surface velocity and the vessel's "right" vector
+            // Originally from ferram4's FAR
+            tmpVec = vessel.ReferenceTransform.up * Vector3.Dot(vessel.ReferenceTransform.up, surfaceVelocity.normalized)
+                   + vessel.ReferenceTransform.right * Vector3.Dot(vessel.ReferenceTransform.right, surfaceVelocity.normalized);     //velocity vector projected onto the vehicle-horizontal plane
+            double tempAoS = 180.0 / Math.PI * Math.Asin(Vector3.Dot(tmpVec.normalized, vessel.ReferenceTransform.right));
+            AoS.value = double.IsNaN(tempAoS) || speedSurface.value < 0.01 ? 0 : tempAoS;
 
             vesselHeading.value = rotationVesselSurface.eulerAngles.y;
             vesselPitch.value = (rotationVesselSurface.eulerAngles.x > 180) ? (360.0 - rotationVesselSurface.eulerAngles.x) : -rotationVesselSurface.eulerAngles.x;
@@ -548,7 +545,7 @@ namespace MuMech
                     //    continue;
 
 
-                    if (!(mod is ModuleRCS) || (mod.ClassName == "ModuleRCSFX" && isLoadedRCSFXExt))
+                    if (!(mod is ModuleRCS) || (mod.GetType() == typeof(ModuleRCS) && isLoadedRCSFXExt))
                         continue;
 
                     ModuleRCS rcs = (ModuleRCS)mod;
@@ -697,7 +694,7 @@ namespace MuMech
                         Vector3 liftVector;
                         float liftDot;
                         float absDot;
-                        cs.SetupCoefficients(velocity, p.atmDensity, out nVel, out liftVector, out liftDot, out absDot);
+                        cs.SetupCoefficients(velocity, out nVel, out liftVector, out liftDot, out absDot);
 
                         Quaternion maxRotation = Quaternion.AngleAxis(cs.ctrlSurfaceRange, cs.transform.rotation * Vector3.right);
 
@@ -935,7 +932,7 @@ namespace MuMech
 
         double ComputeVesselBottomAltitude(Vessel vessel)
         {
-            if (vessel.rigidbody == null) return 0;
+            if (vessel == null || vessel.rigidbody == null) return 0;
             double ret = altitudeTrue;
             for (int i = 0; i < vessel.parts.Count; i++)
             {
@@ -1099,7 +1096,7 @@ namespace MuMech
                     addResource(propellant.id, propellant.currentRequirement, maxreq);
                 }
 
-                if (!e.getFlameoutState)
+                if (e.isOperational)
                 {
                     Part p = e.part;
 
@@ -1108,13 +1105,17 @@ namespace MuMech
                     float maxThrust = e.maxFuelFlow * e.flowMultiplier * Isp * e.g / e.thrustTransforms.Count;
                     float minThrust = e.minFuelFlow * e.flowMultiplier * Isp * e.g / e.thrustTransforms.Count;
 
+                    // RealFuels engines reports as operational even when they are shutdown
+                    if (e.finalThrust == 0f && minThrust > 0f)
+                        minThrust = maxThrust = 0;
+
                     //MechJebCore.print(maxThrust.ToString("F2") + " " + minThrust.ToString("F2") + " " + e.minFuelFlow.ToString("F2") + " " + e.maxFuelFlow.ToString("F2") + " " + e.flowMultiplier.ToString("F2") + " " + Isp.ToString("F2") + " " + thrustLimiter.ToString("F3"));
 
                     double eMaxThrust = minThrust + (maxThrust - minThrust) * thrustLimiter;
                     double eMinThrust = e.throttleLocked ? eMaxThrust : minThrust;
                     // currentThrottle include the thrustLimiter
                     //double eCurrentThrust = usableFraction * (eMaxThrust * e.currentThrottle / thrustLimiter + eMinThrust * (1 - e.currentThrottle / thrustLimiter));
-                    double eCurrentThrust = e.resultingThrust / e.thrustTransforms.Count;
+                    double eCurrentThrust = e.finalThrust / e.thrustTransforms.Count;
 
 
                     //MechJebCore.print(eMinThrust.ToString("F2") + " " + eMaxThrust.ToString("F2") + " " + eCurrentThrust.ToString("F2"));
@@ -1143,9 +1144,10 @@ namespace MuMech
                         Vector3d torque = gimbalExt.torqueVector(gimbal, i, CoM);
 
                         torqueEngineAvailable.Add(torque * eMinThrust);
-                        torqueEngineVariable.Add(torque * (eMaxThrust - eMinThrust));
+                        torqueEngineVariable.Add(torque * (eCurrentThrust - eMinThrust));
                         if (!e.throttleLocked)
                         {
+                            // TODO : use eCurrentThrust instead of maxThrust and change the relevant code in MechJebModuleThrustController for the Differential throttle
                             torqueDiffThrottle.Add(e.vessel.transform.rotation.Inverse() * Vector3d.Cross(partPosition, thrustDirectionVector) * (maxThrust - minThrust));
                         }
                     }
@@ -1250,10 +1252,10 @@ namespace MuMech
 
             // Return the number of kg of resource provided per second under certain conditions.
             // We use kg since the numbers are typically small.
-            private double massProvided(double vesselSpeed, Vector3d vesselFwd, double atmDensity,
+            private double massProvided(double vesselSpeed, Vector3d normVesselSpeed, double atmDensity, double staticPressure, float mach,
                     ModuleResourceIntake intake, Vector3d intakeFwd)
             {
-                if (intake.checkForOxygen && !FlightGlobals.currentMainBody.atmosphereContainsOxygen)
+                if ((intake.checkForOxygen && !FlightGlobals.currentMainBody.atmosphereContainsOxygen) || staticPressure < intake.kPaThreshold) // TODO : add the new test (the bool and maybe the attach node ?)
                 {
                     return 0;
                 }
@@ -1261,26 +1263,15 @@ namespace MuMech
                 // This is adapted from code shared by Amram at:
                 // http://forum.kerbalspaceprogram.com/showthread.php?34288-Maching-Bird-Challeng?p=440505
                 // Seems to be accurate for 0.18.2 anyway.
-                double intakeSpeed = intake.maxIntakeSpeed; // airspeed when the intake isn't moving
+                double intakeSpeed = intake.intakeSpeed; // airspeed when the intake isn't moving
 
-                double aoa = Vector3d.Dot(vesselFwd, intakeFwd);
+                double aoa = Vector3d.Dot(normVesselSpeed, intakeFwd);
                 if (aoa < 0) { aoa = 0; }
                 else if (aoa > 1) { aoa = 1; }
 
-                double finalSpeed;
-                if (aoa <= intake.aoaThreshold)
-                {
-                    finalSpeed = intakeSpeed;
-                }
-                else
-                {
-                    // This is labeled as a bug for double-counting intakeSpeed.
-                    // It also double-counts unitScalar...
-                    double airSpeedGUI = vesselSpeed + intakeSpeed;
-                    double airSpeed = airSpeedGUI * intake.unitScalar;
-                    finalSpeed = aoa * (airSpeed + intakeSpeed);
-                }
-                double airVolume = finalSpeed * intake.area * intake.unitScalar;
+                double finalSpeed = intakeSpeed + aoa * vesselSpeed;
+                
+                double airVolume = finalSpeed * intake.area * intake.unitScalar * intake.machCurve.Evaluate(mach);
                 double airmass = atmDensity * airVolume; // tonnes per second
 
                 // TODO: limit by the amount the intake can store
@@ -1297,24 +1288,34 @@ namespace MuMech
 
                 // For each intake, we want to know the min of what will (or can) be provided either now or at the end of the timestep.
                 // 0 means now, 1 means next timestep
-                Vector3d v0 = FlightGlobals.ship_srfVelocity;
+                Vector3d v0 = FlightGlobals.ship_srfVelocity;               // TODO : Using active ship is bad
                 Vector3d v1 = v0 + dT * FlightGlobals.ship_acceleration;
                 Vector3d v0norm = v0.normalized;
                 Vector3d v1norm = v1.normalized;
                 double v0mag = v0.magnitude;
                 double v1mag = v1.magnitude;
 
-                // As with thrust, here too we should get the static pressure at the intake, not at the center of mass.
-                double atmDensity0 = FlightGlobals.getAtmDensity(FlightGlobals.getStaticPressure(), FlightGlobals.getExternalTemperature());
                 float alt1 = (float)(FlightGlobals.ship_altitude + dT * FlightGlobals.ship_verticalSpeed);
-                double atmDensity1 = FlightGlobals.getAtmDensity(FlightGlobals.getStaticPressure(alt1), FlightGlobals.getExternalTemperature(alt1));
+
+                double staticPressure1 = FlightGlobals.getStaticPressure();
+                double staticPressure2 = FlightGlobals.getStaticPressure(alt1);
+                
+                // As with thrust, here too we should get the static pressure at the intake, not at the center of mass.
+                double atmDensity0 = FlightGlobals.getAtmDensity(staticPressure1, FlightGlobals.getExternalTemperature());
+                double atmDensity1 = FlightGlobals.getAtmDensity(staticPressure2, FlightGlobals.getExternalTemperature(alt1));
+
+                double v0speedOfSound = FlightGlobals.ActiveVessel.mainBody.GetSpeedOfSound(staticPressure1, atmDensity0);
+                double v1speedOfSound = FlightGlobals.ActiveVessel.mainBody.GetSpeedOfSound(staticPressure2, atmDensity1);
+
+                float v0mach = v0speedOfSound > 0 ? (float)(v0.magnitude / v0speedOfSound) : 0;
+                float v1mach = v1speedOfSound > 0 ? (float)(v1.magnitude / v1speedOfSound) : 0;
 
                 intakes = new IntakeData[modules.Count];
                 int idx = 0;
                 for (int index = 0; index < modules.Count; index++)
                 {
                     var intake = modules[index];
-                    Vector3d intakeFwd0 = intake.part.FindModelTransform(intake.intakeTransformName).forward;
+                    Vector3d intakeFwd0 = intake.part.FindModelTransform(intake.intakeTransformName).forward; // TODO : replace with the new public field
                     Vector3d intakeFwd1;
                     {
                         // Rotate the intake by the angular velocity for one timestep, in case the ship is spinning.
@@ -1343,8 +1344,8 @@ namespace MuMech
                             + intakeFwd0[2] * cos[0] * cos[1];*/
                     }
 
-                    double mass0 = massProvided(v0mag, v0norm, atmDensity0, intake, intakeFwd0);
-                    double mass1 = massProvided(v1mag, v1norm, atmDensity1, intake, intakeFwd1);
+                    double mass0 = massProvided(v0mag, v0norm, atmDensity0, staticPressure1, v0mach, intake, intakeFwd0);
+                    double mass1 = massProvided(v1mag, v1norm, atmDensity1, staticPressure2, v1mach, intake, intakeFwd1);
                     double mass = Math.Min(mass0, mass1);
 
                     // Also, we can't have more airflow than what fits in the resource tank of the intake part.
